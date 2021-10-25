@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"github.com/Narachii/quiet_hn/hn"
@@ -8,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 )
@@ -30,26 +32,11 @@ func main() {
 func handler(numStories int, tpl *template.Template) http.HandlerFunc {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		var client hn.Client
-		ids, err := client.TopItems()
-		if err != nil {
-			http.Error(w, "Failed to load top stories", http.StatusInternalServerError)
-			return
-		}
 
-		var stories []item
-		for _, id := range ids {
-			hnItem, err := client.GetItem(id)
-			if err != nil {
-				continue
-			}
-			item := parseHNItem(hnItem)
-			if isStoryLink(item) {
-				stories = append(stories, item)
-				if len(stories) >= numStories {
-					break
-				}
-			}
+		stories, err := getTopStories(numStories)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 		data := templateData{
 			stories,
@@ -61,6 +48,117 @@ func handler(numStories int, tpl *template.Template) http.HandlerFunc {
 			return
 		}
 	})
+}
+
+/*
+-- function without concurrency -- takes 6s to fetch 30 stories
+func getTopStories(numStories int) ([]item, error) {
+	var client hn.Client
+	ids, err := client.TopItems()
+	if err != nil {
+		return nil, errors.New("Failed to load top stories")
+	}
+
+	var stories []item
+	for _, id := range ids {
+		hnItem, err := client.GetItem(id)
+		if err != nil {
+			continue
+		}
+		item := parseHNItem(hnItem)
+		if isStoryLink(item) {
+			stories = append(stories, item)
+			if len(stories) >= numStories {
+				break
+			}
+		}
+	}
+	return stories, nil
+}
+*/
+
+/*
+-- inefficient go routine, res := <- resultCh blocks go routine Hence, runtime doesnt change
+-- takes 6s to fetch 30 stories
+func getTopStories(numStories int) ([]item, error) {
+	var client hn.Client
+	ids, err := client.TopItems()
+	if err != nil {
+		return nil, errors.New("Failed to load top stories")
+	}
+
+	var stories []item
+	for _, id := range ids {
+		type result struct {
+			item item
+			err error
+		}
+		resultCh := make(chan result)
+		go func(id int) {
+			hnItem, err := client.GetItem(id)
+			if err != nil {
+				resultCh <- result{err: err}
+			}
+			resultCh <- result{item: parseHNItem(hnItem)}
+		}(id)
+
+		res := <- resultCh
+		if res.err != nil {
+			continue
+		}
+		if isStoryLink(res.item) {
+			stories = append(stories, res.item)
+			if len(stories) >= numStories {
+				break
+			}
+		}
+	}
+	return stories, nil
+}
+*/
+
+// concurrency function -- takes 0.7s to fetch 30 stories
+func getTopStories(numStories int) ([]item, error) {
+	var client hn.Client
+	ids, err := client.TopItems()
+	if err != nil {
+		return nil, errors.New("Failed to load top stories")
+	}
+	type result struct {
+		idx  int
+		item item
+		err  error
+	}
+
+	resultCh := make(chan result)
+	for i := 0; i < numStories; i++ {
+		go func(idx, id int) {
+			hnItem, err := client.GetItem(id)
+			if err != nil {
+				resultCh <- result{idx: idx, err: err}
+			}
+			resultCh <- result{item: parseHNItem(hnItem)}
+		}(i, ids[i])
+	}
+
+	var results []result
+	for i := 0; i < numStories; i++ {
+		results = append(results, <-resultCh)
+	}
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].idx < results[j].idx
+	})
+
+	var stories []item
+	for _, res := range results {
+		if res.err != nil {
+			continue
+		}
+		if isStoryLink(res.item) {
+			stories = append(stories, res.item)
+		}
+	}
+	return stories, nil
 }
 
 func isStoryLink(item item) bool {
