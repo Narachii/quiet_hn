@@ -33,7 +33,7 @@ func handler(numStories int, tpl *template.Template) http.HandlerFunc {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 
-		stories, err := getTopStories(numStories)
+		stories, err := getCachedStories(numStories)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -50,72 +50,23 @@ func handler(numStories int, tpl *template.Template) http.HandlerFunc {
 	})
 }
 
-/*
--- function without concurrency -- takes 6s to fetch 30 stories
-func getTopStories(numStories int) ([]item, error) {
-	var client hn.Client
-	ids, err := client.TopItems()
+var (
+	cache           []item
+	cacheExpiration time.Time
+)
+
+func getCachedStories(numStories int) ([]item, error) {
+	if time.Now().Sub(cacheExpiration) < 0 {
+		return cache, nil
+	}
+	stories, err := getTopStories(numStories)
 	if err != nil {
-		return nil, errors.New("Failed to load top stories")
+		return nil, err
 	}
-
-	var stories []item
-	for _, id := range ids {
-		hnItem, err := client.GetItem(id)
-		if err != nil {
-			continue
-		}
-		item := parseHNItem(hnItem)
-		if isStoryLink(item) {
-			stories = append(stories, item)
-			if len(stories) >= numStories {
-				break
-			}
-		}
-	}
-	return stories, nil
+	cache = stories
+	cacheExpiration = time.Now().Add(15 * time.Second)
+	return cache, nil
 }
-*/
-
-/*
--- inefficient go routine, res := <- resultCh blocks go routine Hence, runtime doesnt change
--- takes 6s to fetch 30 stories
-func getTopStories(numStories int) ([]item, error) {
-	var client hn.Client
-	ids, err := client.TopItems()
-	if err != nil {
-		return nil, errors.New("Failed to load top stories")
-	}
-
-	var stories []item
-	for _, id := range ids {
-		type result struct {
-			item item
-			err error
-		}
-		resultCh := make(chan result)
-		go func(id int) {
-			hnItem, err := client.GetItem(id)
-			if err != nil {
-				resultCh <- result{err: err}
-			}
-			resultCh <- result{item: parseHNItem(hnItem)}
-		}(id)
-
-		res := <- resultCh
-		if res.err != nil {
-			continue
-		}
-		if isStoryLink(res.item) {
-			stories = append(stories, res.item)
-			if len(stories) >= numStories {
-				break
-			}
-		}
-	}
-	return stories, nil
-}
-*/
 
 // concurrency function -- takes 0.7s to fetch 30 stories
 func getTopStories(numStories int) ([]item, error) {
@@ -196,3 +147,70 @@ type templateData struct {
 	Stories []item
 	Time    time.Duration
 }
+
+/*
+-- function without concurrency -- takes 6s to fetch 30 stories
+func getTopStories(numStories int) ([]item, error) {
+	var client hn.Client
+	ids, err := client.TopItems()
+	if err != nil {
+		return nil, errors.New("Failed to load top stories")
+	}
+
+	var stories []item
+	for _, id := range ids {
+		hnItem, err := client.GetItem(id)
+		if err != nil {
+			continue
+		}
+		item := parseHNItem(hnItem)
+		if isStoryLink(item) {
+			stories = append(stories, item)
+			if len(stories) >= numStories {
+				break
+			}
+		}
+	}
+	return stories, nil
+}
+*/
+
+/*
+-- inefficient go routine, res := <- resultCh blocks go routine Hence, runtime doesnt change
+-- takes 6s to fetch 30 stories
+func getTopStories(numStories int) ([]item, error) {
+	var client hn.Client
+	ids, err := client.TopItems()
+	if err != nil {
+		return nil, errors.New("Failed to load top stories")
+	}
+
+	var stories []item
+	for _, id := range ids {
+		type result struct {
+			item item
+			err error
+		}
+		resultCh := make(chan result)
+		go func(id int) {
+			hnItem, err := client.GetItem(id)
+			if err != nil {
+				resultCh <- result{err: err}
+			}
+			resultCh <- result{item: parseHNItem(hnItem)}
+		}(id)
+
+		res := <- resultCh
+		if res.err != nil {
+			continue
+		}
+		if isStoryLink(res.item) {
+			stories = append(stories, res.item)
+			if len(stories) >= numStories {
+				break
+			}
+		}
+	}
+	return stories, nil
+}
+*/
