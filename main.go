@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -53,9 +54,12 @@ func handler(numStories int, tpl *template.Template) http.HandlerFunc {
 var (
 	cache           []item
 	cacheExpiration time.Time
+	cacheMutex      sync.Mutex
 )
 
 func getCachedStories(numStories int) ([]item, error) {
+	cacheMutex.Lock()
+	defer cacheMutex.Unlock()
 	if time.Now().Sub(cacheExpiration) < 0 {
 		return cache, nil
 	}
@@ -64,7 +68,7 @@ func getCachedStories(numStories int) ([]item, error) {
 		return nil, err
 	}
 	cache = stories
-	cacheExpiration = time.Now().Add(15 * time.Second)
+	cacheExpiration = time.Now().Add(1 * time.Minute)
 	return cache, nil
 }
 
